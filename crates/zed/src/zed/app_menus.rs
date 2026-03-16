@@ -142,6 +142,10 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 ),
                 MenuItem::separator(),
                 MenuItem::action("Add Folder to Project…", workspace::AddFolderToProject),
+                MenuItem::action(
+                    "Open Folders as Workspaces…",
+                    workspace::OpenFoldersAsWorkspaces,
+                ),
                 MenuItem::separator(),
                 MenuItem::action("Save", workspace::Save { save_intent: None }),
                 MenuItem::action("Save As…", workspace::SaveAs),

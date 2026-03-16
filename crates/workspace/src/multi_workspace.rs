@@ -1,8 +1,8 @@
 use anyhow::Result;
 use feature_flags::{AgentV2FeatureFlag, FeatureFlagAppExt};
 use gpui::{
-    App, Context, Entity, EntityId, EventEmitter, Focusable, FontWeight, ManagedView, Pixels,
-    Render, Subscription, Task, Tiling, Window, WindowId, actions, px,
+    App, Context, Entity, EntityId, EventEmitter, Focusable, FontWeight, ManagedView,
+    PathPromptOptions, Pixels, Render, Subscription, Task, Tiling, Window, WindowId, actions, px,
 };
 use project::{DisableAiSettings, Project};
 use settings::Settings;
@@ -626,6 +626,32 @@ impl MultiWorkspace {
         .detach_and_log_err(cx);
     }
 
+    fn handle_open_folders_as_workspaces(
+        &mut self,
+        _: &OpenFoldersAsWorkspaces,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let paths_receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("Select folders to open as workspaces".into()),
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths_receiver.await {
+                if !paths.is_empty() {
+                    this.update_in(cx, |this, window, cx| {
+                        this.open_folders_as_workspaces(paths, window, cx);
+                    })?;
+                }
+            }
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleWorkspaceSidebar, _window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         cx.notify();
@@ -885,6 +911,7 @@ impl Render for MultiWorkspace {
                 .text_color(text_color)
                 .on_action(cx.listener(Self::close_window))
                 .on_action(cx.listener(Self::toggle_sidebar))
+                .on_action(cx.listener(Self::handle_open_folders_as_workspaces))
                 .on_action(
                     cx.listener(|this: &mut Self, _: &NewWorkspaceInWindow, window, cx| {
                         this.create_workspace(window, cx);
