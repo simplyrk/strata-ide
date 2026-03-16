@@ -1,46 +1,67 @@
-# Zed
+# Strata
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
-
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+A fast, multi-project code editor built for developers who work across many repositories at once.
 
 ---
 
-### Installation
+Strata is a high-performance code editor with native support for **multi-folder workspaces**. Open multiple project folders in a single window, each with its own terminal, git state, and file tree — all navigable from a unified sidebar.
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+Built on a GPU-accelerated UI framework written in Rust, Strata delivers the responsiveness of a terminal editor with the features of a full IDE.
 
-Other platforms are not yet available:
+### Key Features
 
-- Web ([tracking issue](https://github.com/zed-industries/zed/issues/5396))
+- **Multi-Folder Workspaces** — Open several project directories in one window. Each folder gets its own isolated workspace with independent git state, terminal, and editor tabs.
+- **Unified Sidebar** — A single sidebar shows all your open projects at a glance with git branch names, file trees, and terminal activity indicators. Click to switch context instantly.
+- **Integrated Terminals** — Every workspace auto-opens a terminal in the center pane (not a bottom dock) with the correct working directory. Terminals live alongside code files as regular tabs.
+- **Fast** — GPU-rendered UI, Rust from top to bottom, instant startup. No Electron.
+- **Tree-sitter & LSP** — Syntax highlighting via Tree-sitter, full language server support for completions, diagnostics, go-to-definition, and more.
+- **Vim Mode** — First-class modal editing support.
+- **Collaboration** — Real-time multiplayer editing with shared workspaces.
+- **Extensible** — WebAssembly-based extension system for languages, themes, and tools.
 
-### Developing Zed
+### Quick Start
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+**From source (macOS):**
 
-### Contributing
+```sh
+# Install dependencies
+brew install cmake
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+# Build and run
+cargo run -p zed
+```
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+Enable multi-folder workspaces in your settings:
 
-### Licensing
+```json
+{
+  "multi_folder_workspaces": {
+    "enabled": true
+  }
+}
+```
 
-License information for third party dependencies must be correctly provided for CI to pass.
+Then use the **Open Folders as Workspaces** command to open multiple directories in a single window.
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+### Architecture
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+Strata leverages a `MultiWorkspace` architecture where each open folder is a fully isolated workspace entity with its own:
 
-## Sponsorship
+- **Project** — worktree, language servers, diagnostics
+- **Center pane** — editor tabs and terminal tabs side by side
+- **Git state** — independent branch tracking per folder
+- **Docks** — git panel, outline panel, debug panel
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+The unified sidebar is rendered by the `MultiWorkspace` container, which manages workspace switching and provides at-a-glance status for all folders.
 
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+### Development
+
+- [Building for macOS](./docs/src/development/macos.md)
+- [Building for Linux](./docs/src/development/linux.md)
+- [Building for Windows](./docs/src/development/windows.md)
+
+### License
+
+Licensed under GPL-3.0. See [LICENSE](./LICENSE-GPL) for details.
+
+Third-party dependency licenses are managed via [`cargo-about`](https://github.com/EmbarkStudios/cargo-about).

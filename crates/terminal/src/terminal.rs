@@ -2207,6 +2207,13 @@ impl Terminal {
         self.task.as_ref()
     }
 
+    /// Returns true if the terminal has an active task that is still running.
+    pub fn has_running_task(&self) -> bool {
+        self.task
+            .as_ref()
+            .is_some_and(|task| task.status == TaskStatus::Running)
+    }
+
     pub fn wait_for_completed_task(&self, cx: &App) -> Task<Option<ExitStatus>> {
         if let Some(task) = self.task() {
             if task.status == TaskStatus::Running {

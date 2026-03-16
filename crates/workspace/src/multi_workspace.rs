@@ -1,8 +1,8 @@
 use anyhow::Result;
 use feature_flags::{AgentV2FeatureFlag, FeatureFlagAppExt};
 use gpui::{
-    App, Context, Entity, EntityId, EventEmitter, Focusable, ManagedView, Pixels, Render,
-    Subscription, Task, Tiling, Window, WindowId, actions, px,
+    App, Context, Entity, EntityId, EventEmitter, Focusable, FontWeight, ManagedView, Pixels,
+    Render, Subscription, Task, Tiling, Window, WindowId, actions, px,
 };
 use project::{DisableAiSettings, Project};
 use settings::Settings;
@@ -11,12 +11,19 @@ use std::path::PathBuf;
 use ui::prelude::*;
 use util::ResultExt;
 
+use crate::workspace_settings::WorkspaceSettings;
+
 pub const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
+const DEFAULT_SIDEBAR_WIDTH: Pixels = px(240.0);
+#[allow(dead_code)]
+const MIN_SIDEBAR_WIDTH: Pixels = px(150.0);
+#[allow(dead_code)]
+const MAX_SIDEBAR_WIDTH: Pixels = px(500.0);
 
 use crate::{
-    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, Panel, Toast,
-    Workspace, WorkspaceId, client_side_decorations, notifications::NotificationId,
-    persistence::model::MultiWorkspaceId,
+    CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView,
+    Panel, Toast, Workspace, WorkspaceId, client_side_decorations,
+    notifications::NotificationId, persistence::model::MultiWorkspaceId,
 };
 
 actions!(
@@ -32,6 +39,8 @@ actions!(
         ToggleWorkspaceSidebar,
         /// Moves focus to or from the workspace sidebar without closing it.
         FocusWorkspaceSidebar,
+        /// Opens multiple folders, each as its own workspace in the current window.
+        OpenFoldersAsWorkspaces,
     ]
 );
 
@@ -55,6 +64,9 @@ pub struct MultiWorkspace {
     workspaces: Vec<Entity<Workspace>>,
     database_id: Option<MultiWorkspaceId>,
     active_workspace_index: usize,
+    sidebar_visible: bool,
+    sidebar_width: Pixels,
+    expanded_folders: Vec<bool>,
     pending_removal_tasks: Vec<Task<()>>,
     _serialize_task: Option<Task<()>>,
     _create_task: Option<Task<()>>,
@@ -64,7 +76,10 @@ pub struct MultiWorkspace {
 impl EventEmitter<MultiWorkspaceEvent> for MultiWorkspace {}
 
 pub fn multi_workspace_enabled(cx: &App) -> bool {
-    cx.has_flag::<AgentV2FeatureFlag>() && !DisableAiSettings::get_global(cx).disable_ai
+    let agent_v2 =
+        cx.has_flag::<AgentV2FeatureFlag>() && !DisableAiSettings::get_global(cx).disable_ai;
+    let multi_folder = WorkspaceSettings::get_global(cx).multi_folder_workspaces_enabled;
+    agent_v2 || multi_folder
 }
 
 impl MultiWorkspace {
@@ -87,6 +102,9 @@ impl MultiWorkspace {
             database_id: None,
             workspaces: vec![workspace],
             active_workspace_index: 0,
+            sidebar_visible: false,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            expanded_folders: vec![true],
             pending_removal_tasks: Vec::new(),
             _serialize_task: None,
             _create_task: None,
@@ -141,6 +159,10 @@ impl MultiWorkspace {
         self.active_workspace_index
     }
 
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_visible
+    }
+
     pub fn activate(&mut self, workspace: Entity<Workspace>, cx: &mut Context<Self>) {
         if !multi_workspace_enabled(cx) {
             self.workspaces[0] = workspace;
@@ -180,6 +202,7 @@ impl MultiWorkspace {
         } else {
             Self::subscribe_to_workspace(&workspace, cx);
             self.workspaces.push(workspace.clone());
+            self.expanded_folders.push(true);
             cx.emit(MultiWorkspaceEvent::WorkspaceAdded(workspace));
             cx.notify();
             self.workspaces.len() - 1
@@ -466,6 +489,9 @@ impl MultiWorkspace {
         }
 
         let removed_workspace = self.workspaces.remove(index);
+        if index < self.expanded_folders.len() {
+            self.expanded_folders.remove(index);
+        }
 
         if self.active_workspace_index >= self.workspaces.len() {
             self.active_workspace_index = self.workspaces.len() - 1;
@@ -524,16 +550,332 @@ impl MultiWorkspace {
             })
         }
     }
+
+    /// Opens each given folder path as its own workspace within this window,
+    /// with a terminal auto-opened in each workspace's center pane.
+    pub fn open_folders_as_workspaces(
+        &mut self,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let app_state = self.workspace().read(cx).app_state().clone();
+        let fs = app_state.fs.clone();
+
+        cx.spawn_in(window, {
+            async move |this, cx| {
+                let mut canonical_paths = Vec::with_capacity(paths.len());
+                for path in &paths {
+                    let canonical = fs.canonicalize(path).await.unwrap_or_else(|_| path.clone());
+                    canonical_paths.push(canonical);
+                }
+
+                for (folder_index, folder_path) in canonical_paths.into_iter().enumerate() {
+                    let app_state = app_state.clone();
+                    let folder_path_for_worktree = folder_path.clone();
+
+                    this.update_in(cx, |this, window, cx| {
+                        let project = Project::local(
+                            app_state.client.clone(),
+                            app_state.node_runtime.clone(),
+                            app_state.user_store.clone(),
+                            app_state.languages.clone(),
+                            app_state.fs.clone(),
+                            None,
+                            project::LocalProjectFlags::default(),
+                            cx,
+                        );
+
+                        project.update(cx, |project, cx| {
+                            project.find_or_create_worktree(folder_path_for_worktree, true, cx)
+                        }).detach_and_log_err(cx);
+
+                        let new_workspace = cx.new(|cx| {
+                            Workspace::new(None, project, app_state, window, cx)
+                        });
+
+                        if folder_index == 0 {
+                            this.set_active_workspace(new_workspace.clone(), cx);
+                        } else {
+                            this.add_workspace(new_workspace.clone(), cx);
+                        }
+
+                        // Dispatch NewCenterTerminal on the new workspace to auto-open
+                        // a terminal with the folder as cwd.
+                        new_workspace.update(cx, |workspace, cx| {
+                            let pane = workspace.active_pane().clone();
+                            let focus = pane.read(cx).focus_handle(cx);
+                            focus.dispatch_action(
+                                &crate::NewCenterTerminal { local: false },
+                                window,
+                                cx,
+                            );
+                        });
+                    })?;
+                }
+
+                this.update_in(cx, |this, window, cx| {
+                    this.sidebar_visible = this.workspaces.len() > 1;
+                    this.focus_active_workspace(window, cx);
+                    cx.notify();
+                })?;
+
+                anyhow::Ok(())
+            }
+        })
+        .detach_and_log_err(cx);
+    }
+
+    fn toggle_sidebar(&mut self, _: &ToggleWorkspaceSidebar, _window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
+        cx.notify();
+    }
+
+    fn toggle_folder_expanded(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(expanded) = self.expanded_folders.get_mut(index) {
+            *expanded = !*expanded;
+            cx.notify();
+        }
+    }
+
+    fn folder_name_for_workspace(workspace: &Workspace, cx: &App) -> SharedString {
+        let project = workspace.project().read(cx);
+        if let Some(worktree) = project.worktrees(cx).next() {
+            worktree.read(cx).root_name_str().to_string().into()
+        } else {
+            "Untitled".into()
+        }
+    }
+
+    fn branch_for_workspace(workspace: &Workspace, cx: &App) -> Option<SharedString> {
+        let project = workspace.project().read(cx);
+        let repository = project.active_repository(cx)?;
+        let repo = repository.read(cx);
+        repo.branch.as_ref().map(|branch| branch.name().to_string().into())
+    }
+
+    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let surface_bg = cx.theme().colors().surface_background;
+        let border_color = cx.theme().colors().border;
+        let text_muted = cx.theme().colors().text_muted;
+        let selected_bg = cx.theme().colors().ghost_element_selected;
+        let hover_bg = cx.theme().colors().ghost_element_hover;
+        let text_color = cx.theme().colors().text;
+
+        // Phase 1: collect all data while borrowing cx immutably
+        struct FolderData {
+            folder_name: SharedString,
+            branch_name: Option<SharedString>,
+            is_active: bool,
+            is_expanded: bool,
+            children: Vec<(SharedString, bool)>,
+        }
+
+        let mut folder_data = Vec::new();
+        for (index, workspace) in self.workspaces.iter().enumerate() {
+            let is_active = index == self.active_workspace_index;
+            let is_expanded = self.expanded_folders.get(index).copied().unwrap_or(true);
+
+            let folder_name = workspace.read_with(cx, |workspace, cx| {
+                Self::folder_name_for_workspace(workspace, cx)
+            });
+            let branch_name = workspace.read_with(cx, |workspace, cx| {
+                Self::branch_for_workspace(workspace, cx)
+            });
+
+            let children: Vec<(SharedString, bool)> = if is_expanded {
+                workspace.read_with(cx, |workspace, cx| {
+                    let project = workspace.project().read(cx);
+                    let mut entries = Vec::new();
+                    for worktree in project.worktrees(cx) {
+                        let worktree = worktree.read(cx);
+                        for entry in worktree.entries(false, 0) {
+                            let depth = entry.path.components().count();
+                            if depth <= 1 {
+                                let name: SharedString = entry
+                                    .path
+                                    .file_name()
+                                    .unwrap_or(worktree.root_name_str())
+                                    .to_string()
+                                    .into();
+                                entries.push((name, entry.is_dir()));
+                            }
+                        }
+                    }
+                    entries
+                })
+            } else {
+                Vec::new()
+            };
+
+            folder_data.push(FolderData {
+                folder_name,
+                branch_name,
+                is_active,
+                is_expanded,
+                children,
+            });
+        }
+
+        // Phase 2: build elements using cx.listener for interactivity
+        let folder_entries: Vec<Div> = folder_data
+            .into_iter()
+            .enumerate()
+            .map(|(index, data)| {
+                let chevron: &str = if data.is_expanded { "v" } else { ">" };
+
+                let header = div()
+                    .id(ElementId::named_usize("folder-header", index))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py(px(4.0))
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .when(data.is_active, |this| this.bg(selected_bg))
+                    .hover(|style| style.bg(hover_bg))
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.activate_index(index, window, cx);
+                    }))
+                    .child(
+                        div()
+                            .id(ElementId::named_usize("folder-chevron", index))
+                            .text_xs()
+                            .text_color(text_muted)
+                            .mr_1()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.toggle_folder_expanded(index, cx);
+                            }))
+                            .child(chevron),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(text_color)
+                            .child(data.folder_name),
+                    )
+                    .when_some(data.branch_name, |this, branch| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(text_muted)
+                                .ml_auto()
+                                .child(branch),
+                        )
+                    });
+
+                let mut folder_div = div().flex().flex_col().child(header);
+                if data.is_expanded && !data.children.is_empty() {
+                    folder_div = folder_div.child(
+                        div().flex().flex_col().pl(px(16.0)).children(
+                            data.children.into_iter().enumerate().map(
+                                move |(child_index, (name, is_dir))| {
+                                    let entry_id = ElementId::named_usize(
+                                        format!("entry-{index}"),
+                                        child_index,
+                                    );
+                                    let prefix: SharedString =
+                                        if is_dir { "📁 " } else { "📄 " }.into();
+                                    div()
+                                        .id(entry_id)
+                                        .flex()
+                                        .items_center()
+                                        .px_2()
+                                        .py(px(2.0))
+                                        .text_sm()
+                                        .text_color(text_color)
+                                        .rounded_sm()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(hover_bg))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(prefix)
+                                                .child(name),
+                                        )
+                                },
+                            ),
+                        ),
+                    );
+                }
+                folder_div
+            })
+            .collect();
+
+        div()
+            .flex()
+            .flex_col()
+            .w(self.sidebar_width)
+            .h_full()
+            .bg(surface_bg)
+            .border_r_1()
+            .border_color(border_color)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(text_muted)
+                            .child("WORKSPACES"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("workspace-sidebar-entries")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(folder_entries),
+            )
+    }
 }
 
 impl Render for MultiWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_font = theme::setup_ui_font(window, cx);
         let text_color = cx.theme().colors().text;
+        let show_sidebar =
+            self.sidebar_visible && self.workspaces.len() > 1 && multi_workspace_enabled(cx);
 
         let workspace = self.workspace().clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
         let root = workspace.update(cx, |workspace, cx| workspace.actions(h_flex(), window, cx));
+
+        let content = if show_sidebar {
+            div()
+                .flex()
+                .flex_1()
+                .size_full()
+                .overflow_hidden()
+                .child(self.render_sidebar(cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .size_full()
+                        .overflow_hidden()
+                        .child(self.workspace().clone()),
+                )
+        } else {
+            div()
+                .flex()
+                .flex_1()
+                .size_full()
+                .overflow_hidden()
+                .child(self.workspace().clone())
+        };
 
         client_side_decorations(
             root.key_context(workspace_key_context)
@@ -542,6 +884,7 @@ impl Render for MultiWorkspace {
                 .font(ui_font)
                 .text_color(text_color)
                 .on_action(cx.listener(Self::close_window))
+                .on_action(cx.listener(Self::toggle_sidebar))
                 .on_action(
                     cx.listener(|this: &mut Self, _: &NewWorkspaceInWindow, window, cx| {
                         this.create_workspace(window, cx);
@@ -557,14 +900,7 @@ impl Render for MultiWorkspace {
                         this.activate_previous_workspace(window, cx);
                     },
                 ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .size_full()
-                        .overflow_hidden()
-                        .child(self.workspace().clone()),
-                )
+                .child(content)
                 .child(self.workspace().read(cx).modal_layer.clone()),
             window,
             cx,

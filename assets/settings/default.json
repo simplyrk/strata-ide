@@ -194,6 +194,14 @@
   //
   // Default: "client"
   "window_decorations": "client",
+  // Settings for multi-folder workspaces.
+  "multi_folder_workspaces": {
+    // Whether to enable multi-folder workspaces, allowing multiple project
+    // folders to be open in a single window with a unified sidebar.
+    //
+    // Default: false
+    "enabled": false
+  },
   // Whether to use the system provided dialogs for Open and Save As.
   // When set to false, Zed will use the built-in keyboard-first pickers.
   "use_system_path_prompts": true,

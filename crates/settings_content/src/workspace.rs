@@ -122,6 +122,18 @@ pub struct WorkspaceSettingsContent {
     /// What draws window decorations/titlebar, the client application (Zed) or display server
     /// Default: client
     pub window_decorations: Option<WindowDecorations>,
+    /// Settings for multi-folder workspaces.
+    pub multi_folder_workspaces: Option<MultiFolderWorkspacesSettings>,
+}
+
+#[with_fallible_options]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct MultiFolderWorkspacesSettings {
+    /// Whether to enable multi-folder workspaces, allowing multiple project
+    /// folders to be open in a single window with a unified sidebar.
+    ///
+    /// Default: false
+    pub enabled: Option<bool>,
 }
 
 #[with_fallible_options]

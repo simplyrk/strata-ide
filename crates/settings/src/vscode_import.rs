@@ -995,6 +995,7 @@ impl VsCodeSettings {
                 }
             }),
             zoomed_padding: None,
+            multi_folder_workspaces: None,
         }
     }
 
