@@ -1,0 +1,40 @@
+name: Build Strata
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-macos:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-arm64-cargo-
+
+      - name: Build Strata (release)
+        run: cargo build --release -p zed
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: strata-macos-arm64
+          path: target/release/zed
+          if-no-files-found: error
